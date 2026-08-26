@@ -1,30 +1,18 @@
 // node --experimental-strip-types src/api.check.ts
+// Auth and patient-data logic now live in server/ (see server/app.check.ts) — this only covers
+// the display formatting that's still genuinely client-side.
 import assert from 'node:assert/strict'
-import { createAccount, createPatient, getPatient, signIn } from './api.ts'
+import { age, formatDob } from './api.ts'
 
-assert.equal(signIn('sharma@hospital.com', 'hms1234').role, 'Doctor')
-assert.equal((signIn('dr.sharma', 'hms1234') as Record<string, unknown>).password, undefined)
-assert.throws(() => signIn('dr.sharma', 'wrong'), /Invalid credentials/)
-assert.throws(() => signIn('nobody', 'hms1234'), /Invalid credentials/)
+assert.equal(formatDob('1985-03-15'), '15/03/1985')
 
-const acct = { name: 'New Doc', username: 'dr.new', email: 'New@Hospital.com', role: 'Doctor' }
-assert.throws(() => createAccount({ ...acct, password: 'short' }), /at least 8/)
-assert.equal(createAccount({ ...acct, password: 'longenough' }).email, 'new@hospital.com')
-assert.equal(signIn('new@hospital.com', 'longenough').name, 'New Doc')
-assert.throws(() => createAccount({ ...acct, password: 'longenough' }), /already exists/)
-
-assert.equal(getPatient('p-10234')?.name, 'John Doe')
-assert.equal(getPatient('P-99999'), undefined)
-
-const created = createPatient({
-  name: 'Test',
-  dob: '01/01/2000',
-  gender: 'Other',
-  phone: '+91 00000 00000',
-  email: 't@e.com',
-  address: 'X',
-})
-assert.equal(created.id, 'P-10237')
-assert.equal(getPatient('P-10237')?.name, 'Test')
+// Age is relative to today, so build the fixtures from today.
+const t = new Date()
+const iso = (y: number, m: number, d: number) =>
+  `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+assert.equal(age(iso(t.getFullYear() - 30, t.getMonth() + 1, t.getDate())), 30) // birthday today
+assert.equal(age(iso(t.getFullYear() - 30, 1, 1)), 30) // birthday passed
+const dec31 = t.getMonth() === 11 && t.getDate() === 31
+assert.equal(age(iso(t.getFullYear() - 30, 12, 31)), dec31 ? 30 : 29) // birthday still to come
 
 console.log('ok')

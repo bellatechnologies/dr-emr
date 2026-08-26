@@ -1,10 +1,11 @@
-// Mock backend. Swap these three functions for fetch() calls when the Express API exists.
+// Talks to the Express API in server/. No auth decision and no patient data live in the browser —
+// this file only makes fetch calls and formats what the server sends back.
 
 export type User = { username: string; email: string; name: string; role: string }
-type Account = User & { password: string }
 export type Patient = {
   id: string
   name: string
+  /** ISO yyyy-mm-dd — what <input type="date"> produces. Format for display with formatDob(). */
   dob: string
   gender: string
   phone: string
@@ -12,71 +13,75 @@ export type Patient = {
   address: string
 }
 
-// ponytail: passwords in plain text because this is a mock. Hash with bcrypt/argon2 server-side.
-const users: Account[] = [
-  { username: 'dr.sharma', email: 'sharma@hospital.com', name: 'Dr. Sharma', role: 'Doctor', password: 'hms1234' },
-  { username: 'nurse.priya', email: 'priya@hospital.com', name: 'Priya', role: 'Nurse', password: 'hms1234' },
-  { username: 'admin.raj', email: 'raj@hospital.com', name: 'Raj', role: 'Admin', password: 'hms1234' },
-]
+type BeginResult = { enrolling: true; secret: string; qr: string } | { enrolling: false }
 
-const patients: Patient[] = [
-  {
-    id: 'P-10234',
-    name: 'John Doe',
-    dob: '15/03/1985',
-    gender: 'Male',
-    phone: '+91 98765 43210',
-    email: 'john.doe@email.com',
-    address: '12, MG Road, Bangalore',
-  },
-  {
-    id: 'P-10235',
-    name: 'Priya Kumari',
-    dob: '22/07/1990',
-    gender: 'Female',
-    phone: '+91 87654 32109',
-    email: 'priya.k@email.com',
-    address: '45, Anna Nagar, Chennai',
-  },
-  {
-    id: 'P-10236',
-    name: 'Ravi Shankar',
-    dob: '01/12/1978',
-    gender: 'Male',
-    phone: '+91 76543 21098',
-    email: 'ravi.s@email.com',
-    address: '78, Jubilee Hills, Hyderabad',
-  },
-]
-
-const find = (login: string) =>
-  users.find((u) => u.username === login.trim() || u.email === login.trim().toLowerCase())
-
-const publicUser = ({ password: _, ...u }: Account): User => u
-
-export function signIn(login: string, password: string): User {
-  const account = find(login)
-  if (!account || account.password !== password) {
-    throw new Error('Invalid credentials. Please try again.')
-  }
-  return publicUser(account)
+let onUnauthorized: (() => void) | null = null
+/** Called whenever the server says the session is gone — wire it to clear client-side user state. */
+export const setUnauthorizedHandler = (fn: () => void) => {
+  onUnauthorized = fn
 }
 
-export function createAccount(a: Account): User {
-  if (find(a.username) || find(a.email)) {
-    throw new Error('An account with that username or email already exists.')
-  }
-  if (a.password.length < 8) throw new Error('Password must be at least 8 characters.')
-  const account = { ...a, username: a.username.trim(), email: a.email.trim().toLowerCase() }
-  users.push(account)
-  return publicUser(account)
+async function throwApiError(res: Response): Promise<never> {
+  const body = await res.json().catch(() => ({}))
+  throw new Error(body.error ?? 'Something went wrong.')
 }
 
-export const getPatient = (id: string) =>
-  patients.find((p) => p.id.toLowerCase() === id.trim().toLowerCase())
+export async function me(): Promise<User | null> {
+  const res = await fetch('/api/auth/me')
+  if (!res.ok) return null
+  return (await res.json()).user
+}
 
-export function createPatient(p: Omit<Patient, 'id'>): Patient {
-  const next = { ...p, id: `P-${10234 + patients.length}` }
-  patients.push(next)
-  return next
+export async function beginLogin(login: string): Promise<BeginResult> {
+  const res = await fetch('/api/auth/begin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ login }),
+  })
+  if (!res.ok) await throwApiError(res)
+  return res.json()
+}
+
+export async function verifyCode(login: string, code: string): Promise<User> {
+  const res = await fetch('/api/auth/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ login, code }),
+  })
+  if (!res.ok) await throwApiError(res)
+  return (await res.json()).user
+}
+
+export async function logout(): Promise<void> {
+  await fetch('/api/auth/logout', { method: 'POST' })
+}
+
+export async function getPatient(id: string): Promise<Patient | undefined> {
+  const res = await fetch(`/api/patients/${encodeURIComponent(id)}`)
+  if (res.status === 404) return undefined
+  if (res.status === 401) onUnauthorized?.()
+  if (!res.ok) await throwApiError(res)
+  return (await res.json()).patient
+}
+
+export async function createPatient(p: Omit<Patient, 'id'>): Promise<Patient> {
+  const res = await fetch('/api/patients', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(p),
+  })
+  if (res.status === 401) onUnauthorized?.()
+  if (!res.ok) await throwApiError(res)
+  return (await res.json()).patient
+}
+
+/** '1985-03-15' -> '15/03/1985'. String split, not Date, to dodge the UTC-midnight off-by-one-day. */
+export const formatDob = (dob: string) => dob.split('-').reverse().join('/')
+
+export function age(dob: string): number {
+  const [y, m, d] = dob.split('-').map(Number)
+  const now = new Date()
+  const month = now.getMonth() + 1
+  const before = month < m || (month === m && now.getDate() < d)
+  return now.getFullYear() - y - (before ? 1 : 0)
 }

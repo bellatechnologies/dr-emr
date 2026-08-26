@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { AlertTriangle, ChevronDown, HeartPulse, Search, UserPlus } from 'lucide-react'
-import { createPatient, getPatient, type Patient, type User } from './api'
+import { AlertTriangle, ChevronDown, HeartPulse, Search, UserPlus, X } from 'lucide-react'
+import { age, createPatient, formatDob, getPatient, logout, type Patient, type User } from './api'
 
 const TABS = ['Home', 'OP', 'Lab', 'IP', 'D/S', 'Pharmacy', 'Growth', 'Billing', 'Radiology']
 
 export default function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [tab, setTab] = useState('Home')
   const [menu, setMenu] = useState(false)
+  const [patient, setPatient] = useState<Patient | null>(null)
 
   return (
     <div className="min-h-full bg-slate-100">
@@ -27,7 +28,7 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
             <div className="absolute right-0 z-10 mt-1 w-36 overflow-hidden rounded-md bg-white text-sm text-slate-700 shadow-lg">
               <button className="block w-full px-4 py-2 text-left hover:bg-slate-100">Profile</button>
               <button
-                onClick={onLogout}
+                onClick={() => logout().then(onLogout)}
                 className="block w-full px-4 py-2 text-left text-red-600 hover:bg-slate-100"
               >
                 Logout
@@ -37,28 +38,47 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
         </div>
       </header>
 
-      <nav className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-2">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`shrink-0 border-b-2 px-4 py-3 text-sm font-medium ${
-              tab === t
-                ? 'border-blue-700 text-blue-800'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            {t}
-          </button>
-        ))}
-      </nav>
+      <div className="flex items-center border-b border-slate-200 bg-white pr-2">
+        <nav className="flex flex-1 gap-1 overflow-x-auto px-2">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`shrink-0 border-b-2 px-4 py-3 text-sm font-medium ${
+                tab === t
+                  ? 'border-blue-700 text-blue-800'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </nav>
+        {patient && <PatientChip patient={patient} onClear={() => setPatient(null)} />}
+      </div>
 
       <main className="mx-auto max-w-4xl p-4 sm:p-6">
         {tab === 'Home' ? (
-          <PatientSearch />
+          patient ? (
+            <PatientCard patient={patient} onChange={() => setPatient(null)} />
+          ) : (
+            <PatientSearch onSelect={setPatient} />
+          )
         ) : (
           <div className="rounded-xl bg-white p-10 text-center text-sm text-slate-500 shadow-sm">
-            {tab} module — coming soon.
+            {patient ? (
+              `${tab} records for ${patient.name} (${patient.id}) — coming soon.`
+            ) : (
+              <>
+                <p>No patient selected.</p>
+                <button
+                  onClick={() => setTab('Home')}
+                  className="mt-4 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
+                >
+                  GO TO PATIENT SEARCH
+                </button>
+              </>
+            )}
           </div>
         )}
       </main>
@@ -66,15 +86,55 @@ export default function Dashboard({ user, onLogout }: { user: User; onLogout: ()
   )
 }
 
-function PatientSearch() {
+function PatientChip({ patient, onClear }: { patient: Patient; onClear: () => void }) {
+  const initials = patient.name
+    .split(' ')
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join('')
+
+  return (
+    <div className="ml-2 flex shrink-0 items-center gap-2 rounded-full border border-blue-200 bg-blue-50 py-1 pr-2 pl-1">
+      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-700 text-[10px] font-bold text-white">
+        {initials}
+      </span>
+      <div className="leading-tight">
+        <div className="text-xs font-semibold text-slate-800">{patient.name}</div>
+        <div className="text-[10px] text-slate-500">
+          {patient.id} · {patient.gender[0]} · {age(patient.dob)}y
+        </div>
+      </div>
+      <button
+        onClick={onClear}
+        aria-label="Clear patient"
+        className="text-slate-400 hover:text-slate-700"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
+function PatientSearch({ onSelect }: { onSelect: (p: Patient) => void }) {
   const [query, setQuery] = useState('')
-  const [result, setResult] = useState<Patient | 'none' | null>(null)
+  const [notFound, setNotFound] = useState(false)
   const [adding, setAdding] = useState(false)
 
-  function search(e: React.FormEvent) {
+  async function search(e: React.FormEvent) {
     e.preventDefault()
     setAdding(false)
-    setResult(getPatient(query) ?? 'none')
+    try {
+      const found = await getPatient(query)
+      setNotFound(!found)
+      if (found) onSelect(found)
+    } catch {
+      setNotFound(false) // session expired mid-search — App swaps back to Login momentarily
+    }
+  }
+
+  function register() {
+    setNotFound(false)
+    setAdding(true)
   }
 
   return (
@@ -96,19 +156,14 @@ function PatientSearch() {
           </button>
         </form>
         <button
-          onClick={() => {
-            setResult(null)
-            setAdding(true)
-          }}
+          onClick={register}
           className="flex items-center justify-center gap-2 rounded-lg border border-blue-700 px-4 py-2.5 text-sm font-semibold text-blue-700 hover:bg-blue-50"
         >
           <UserPlus className="h-4 w-4" /> NEW PATIENT
         </button>
       </div>
 
-      {result && result !== 'none' && <PatientCard patient={result} />}
-
-      {result === 'none' && (
+      {notFound && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-center">
           <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
           <h3 className="mt-2 font-semibold text-amber-900">No Patient ID Found</h3>
@@ -116,10 +171,7 @@ function PatientSearch() {
             The entered Patient ID does not exist. Please verify and try again.
           </p>
           <button
-            onClick={() => {
-              setResult(null)
-              setAdding(true)
-            }}
+            onClick={register}
             className="mt-4 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
           >
             REGISTER NEW PATIENT
@@ -128,14 +180,7 @@ function PatientSearch() {
       )}
 
       {adding && (
-        <RegisterForm
-          onCancel={() => setAdding(false)}
-          onCreated={(p) => {
-            setAdding(false)
-            setQuery(p.id)
-            setResult(p)
-          }}
-        />
+        <RegisterForm onCancel={() => setAdding(false)} onCreated={onSelect} />
       )}
     </div>
   )
@@ -160,10 +205,14 @@ function RegisterForm({
   onCancel: () => void
   onCreated: (p: Patient) => void
 }) {
-  function submit(e: React.FormEvent<HTMLFormElement>) {
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const data = Object.fromEntries(new FormData(e.currentTarget)) as Omit<Patient, 'id'>
-    onCreated(createPatient(data))
+    try {
+      onCreated(await createPatient(data))
+    } catch {
+      // session expired mid-registration — App swaps back to Login momentarily
+    }
   }
 
   return (
@@ -202,21 +251,31 @@ function RegisterForm({
   )
 }
 
-function PatientCard({ patient }: { patient: Patient }) {
+function PatientCard({ patient, onChange }: { patient: Patient; onChange: () => void }) {
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm">
-      <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+      <div className="flex items-start justify-between border-b border-slate-100 pb-4">
         <div>
           <h3 className="text-lg font-semibold text-slate-800">{patient.name}</h3>
-          <span className="text-sm text-blue-700">{patient.id}</span>
+          <span className="text-sm text-blue-700">
+            {patient.id} · {patient.gender} · {age(patient.dob)}y
+          </span>
         </div>
-        <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
-          Active
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
+            Active
+          </span>
+          <button
+            onClick={onChange}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            CHANGE PATIENT
+          </button>
+        </div>
       </div>
       <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
         {[
-          ['Date of Birth', patient.dob],
+          ['Date of Birth', formatDob(patient.dob)],
           ['Gender', patient.gender],
           ['Phone', patient.phone],
           ['Email', patient.email],
