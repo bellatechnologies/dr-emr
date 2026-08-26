@@ -55,21 +55,26 @@ export const generateSecret = () => base32Encode(randomBytes(20))
 export const otpauthUri = (email: string, secret: string) =>
   `otpauth://totp/HMS:${encodeURIComponent(email)}?secret=${secret}&issuer=HMS&digits=6&period=${TIME_STEP_SECONDS}`
 
-// Closes the replay window TOTP alone leaves open: a code is good for up to ~90s (the ±1-step
-// tolerance below), so without this, a shoulder-surfed or sniffed code is reusable within that
-// window. Keyed by account, so one user's history never blocks another's.
-const lastAcceptedCounter = new Map<string, number>()
+export type Verification = { ok: true; counter: number } | { ok: false }
 
-export function verifyTotp(accountKey: string, secretBase32: string, code: string): boolean {
+/**
+ * Pure — no module state. On serverless, two requests can land on two different instances with
+ * two different memories, so replay protection has to be a value the caller persists (e.g. in
+ * Supabase) and passes back in, not something this file remembers on its own.
+ *
+ * Closes the replay window TOTP alone leaves open: a code is good for up to ~90s (the ±1-step
+ * tolerance below), so without this, a shoulder-surfed or sniffed code is reusable within that
+ * window.
+ */
+export function verifyTotp(secretBase32: string, code: string, lastAcceptedCounter: number | null): Verification {
   const secret = base32Decode(secretBase32)
   const now = Math.floor(Date.now() / 1000 / TIME_STEP_SECONDS)
-  const last = lastAcceptedCounter.get(accountKey) ?? -1
+  const last = lastAcceptedCounter ?? -1
   const trimmed = code.trim()
   for (const counter of [now - 1, now, now + 1]) {
     if (counter > last && hotp(secret, counter) === trimmed) {
-      lastAcceptedCounter.set(accountKey, counter)
-      return true
+      return { ok: true, counter }
     }
   }
-  return false
+  return { ok: false }
 }

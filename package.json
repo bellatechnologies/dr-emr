@@ -3,12 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": { "node": "22.x" },
   "scripts": {
     "dev": "vite",
     "server": "node --env-file=server/.env --experimental-strip-types --watch server/index.ts",
     "server:check": "node --env-file=server/.env --experimental-strip-types server/app.check.ts",
     "build": "tsc -b && vite build",
-    "typecheck:server": "tsc -p server/tsconfig.json",
+    "typecheck:server": "tsc -p server/tsconfig.json && tsc -p api/tsconfig.json",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -107,12 +107,25 @@ try {
   assert.equal(signedIn.status, 200)
   assert.equal(signedIn.body.user.role, 'Doctor')
   assert.equal(signedIn.body.user.totp_secret, undefined)
+  assert.equal(signedIn.body.user.totp_last_counter, undefined)
   assert.match(signedIn.setCookie[0], /HttpOnly/i)
   assert.match(signedIn.setCookie[0], /SameSite=Lax/i)
   const cookie = signedIn.setCookie[0].split(';')[0]
 
   // Replay of the exact same code is rejected even though it's still inside its time window.
   assert.equal((await post('/api/auth/verify', { login: TEST_USERNAME, code: hotp(secret, counter) })).status, 401)
+
+  // 5. The property this check exists to prove: a session created on one Express instance is
+  // honored by a completely separate instance with its own empty memory — exactly what happens
+  // between two different Vercel function invocations. If session/lockout state still lived in
+  // an in-process Map, this would 401.
+  const server2 = createApp().listen(0)
+  const port2 = (server2.address() as { port: number }).port
+  const crossInstance = await fetch(`http://localhost:${port2}/api/patients/P-10234`, {
+    headers: { Cookie: cookie },
+  })
+  assert.equal(crossInstance.status, 200)
+  server2.close()
 
   // The cookie is what gates data now — not client-side React state.
   assert.equal((await get('/api/patients/P-10234', cookie)).status, 200)
@@ -142,5 +155,7 @@ try {
 } finally {
   server.close()
   await supabase.from('staff').delete().in('username', [TEST_USERNAME, NOT_ENROLLED_USERNAME])
+  await supabase.from('sessions').delete().eq('email', TEST_EMAIL)
+  await supabase.from('login_attempts').delete().eq('login_key', TEST_USERNAME.toLowerCase())
   if (createdPatientId) await supabase.from('patients').delete().eq('id', createdPatientId)
 }

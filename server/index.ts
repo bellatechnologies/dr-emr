@@ -1,14 +1,22 @@
 import express, { type Request, type Response, type NextFunction } from 'express'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { toDataURL } from 'qrcode'
 import {
+  clearLoginAttempts,
   createPatient,
+  createSession,
   createStaff,
+  deleteSession,
   findStaff,
+  getLoginAttempt,
   getPatient,
+  getSession,
   isUniqueViolation,
+  recordFailedAttempt,
+  setTotpLastCounter,
   toUser,
+  type LoginAttempt,
   type Patient,
 } from './store.ts'
 import { generateSecret, otpauthUri, verifyTotp } from './totp.ts'
@@ -27,16 +35,26 @@ function parseCookies(header: string | undefined): Record<string, string> {
   return out
 }
 
-// Staff and patient records live in Supabase (server/store.ts) — this file only keeps sessions
-// and the lockout counter in memory, since those are short-lived by design either way.
-export function createApp() {
-  const sessions = new Map<string, { email: string; expires: number }>()
-  const failedAttempts = new Map<string, { count: number; lockedUntil: number }>()
+const hashToken = (token: string) => createHash('sha256').update(token).digest('hex')
 
+async function rejectCode(res: Response, key: string, lock: LoginAttempt | undefined) {
+  const count = (lock?.count ?? 0) + 1
+  const locked = count >= LOCKOUT_AFTER
+  await recordFailedAttempt(key, locked ? 0 : count, locked ? new Date(Date.now() + LOCKOUT_MS) : null)
+  res.status(401).json({ error: 'Invalid code. Please try again.' })
+}
+
+// Staff, patients, sessions, and login-lockout state all live in Supabase (server/store.ts) — this
+// process holds none of it in memory. That's deliberate: on Vercel, requests from the same user can
+// land on different, independently-memoried function instances, so anything kept in a local Map
+// would randomly appear to "forget" sessions or reset lockout counters. Supabase is the only shared
+// state, so any number of instances agree on it.
+export function createApp() {
   async function currentUser(req: Request) {
-    const id = parseCookies(req.headers.cookie)[SESSION_COOKIE]
-    const session = id ? sessions.get(id) : undefined
-    if (!session || session.expires < Date.now()) return undefined
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE]
+    if (!token) return undefined
+    const session = await getSession(hashToken(token))
+    if (!session || new Date(session.expires_at).getTime() < Date.now()) return undefined
     const account = await findStaff(session.email)
     return account ? toUser(account) : undefined
   }
@@ -91,36 +109,35 @@ export function createApp() {
     const key = login.trim().toLowerCase()
     const account = await findStaff(login)
 
-    const lock = failedAttempts.get(key)
-    if (lock?.lockedUntil && lock.lockedUntil > Date.now()) {
+    const lock = await getLoginAttempt(key)
+    if (lock?.locked_until && new Date(lock.locked_until).getTime() > Date.now()) {
       return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' })
     }
 
-    if (!account?.totp_secret || !verifyTotp(account.email, account.totp_secret, code)) {
-      const count = (lock?.count ?? 0) + 1
-      failedAttempts.set(
-        key,
-        count >= LOCKOUT_AFTER ? { count: 0, lockedUntil: Date.now() + LOCKOUT_MS } : { count, lockedUntil: 0 },
-      )
-      return res.status(401).json({ error: 'Invalid code. Please try again.' })
-    }
-    failedAttempts.delete(key)
+    if (!account?.totp_secret) return rejectCode(res, key, lock)
 
-    const sessionId = randomBytes(32).toString('hex')
-    sessions.set(sessionId, { email: account.email, expires: Date.now() + SESSION_TTL_MS })
-    res.cookie(SESSION_COOKIE, sessionId, {
+    const verification = verifyTotp(account.totp_secret, code, account.totp_last_counter)
+    if (!verification.ok) return rejectCode(res, key, lock)
+
+    await clearLoginAttempts(key)
+    await setTotpLastCounter(account.username, verification.counter)
+
+    const token = randomBytes(32).toString('hex')
+    await createSession(hashToken(token), account.email, new Date(Date.now() + SESSION_TTL_MS))
+    res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
+      path: '/',
       maxAge: SESSION_TTL_MS,
     })
     res.json({ user: toUser(account) })
   })
 
-  app.post('/api/auth/logout', (req, res) => {
-    const id = parseCookies(req.headers.cookie)[SESSION_COOKIE]
-    if (id) sessions.delete(id)
-    res.clearCookie(SESSION_COOKIE)
+  app.post('/api/auth/logout', async (req, res) => {
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE]
+    if (token) await deleteSession(hashToken(token))
+    res.clearCookie(SESSION_COOKIE, { path: '/' })
     res.json({ ok: true })
   })
 
