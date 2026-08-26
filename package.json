@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "node --experimental-strip-types --watch server/index.ts",
+    "server": "node --env-file=server/.env --experimental-strip-types --watch server/index.ts",
+    "server:check": "node --env-file=server/.env --experimental-strip-types server/app.check.ts",
     "build": "tsc -b && vite build",
     "typecheck:server": "tsc -p server/tsconfig.json",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
     "express": "^5.2.1",
     "lucide-react": "^1.31.0",
     "qrcode": "^1.5.4",

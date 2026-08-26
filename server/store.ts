@@ -1,6 +1,6 @@
-export type User = { username: string; email: string; name: string; role: string }
-type Account = User & { totpSecret?: string }
+import { supabase } from './supabase.ts'
 
+export type User = { username: string; email: string; name: string; role: string }
 export type Patient = {
   id: string
   name: string
@@ -11,45 +11,49 @@ export type Patient = {
   address: string
 }
 
-// Fresh copies per createApp() call, so the integration check gets a clean directory each run.
-export function seedUsers(): Account[] {
-  return [
-    { username: 'dr.sharma', email: 'sharma@hospital.com', name: 'Dr. Sharma', role: 'Doctor' },
-    { username: 'nurse.priya', email: 'priya@hospital.com', name: 'Priya', role: 'Nurse' },
-    { username: 'admin.raj', email: 'raj@hospital.com', name: 'Raj', role: 'Admin' },
-  ]
+export type StaffRow = User & { totp_secret: string | null }
+
+export const toUser = ({ totp_secret: _drop, ...user }: StaffRow): User => user
+
+const STAFF_COLUMNS = 'username, email, name, role, totp_secret'
+
+/** Two lookups, not one .or() filter — avoids feeding user input into a PostgREST filter string. */
+export async function findStaff(login: string): Promise<StaffRow | undefined> {
+  const value = login.trim()
+
+  const byUsername = await supabase.from('staff').select(STAFF_COLUMNS).eq('username', value).maybeSingle()
+  if (byUsername.error) throw byUsername.error
+  if (byUsername.data) return byUsername.data as StaffRow
+
+  const byEmail = await supabase.from('staff').select(STAFF_COLUMNS).eq('email', value.toLowerCase()).maybeSingle()
+  if (byEmail.error) throw byEmail.error
+  return (byEmail.data as StaffRow) ?? undefined
 }
 
-export function seedPatients(): Patient[] {
-  return [
-    {
-      id: 'P-10234',
-      name: 'John Doe',
-      dob: '1985-03-15',
-      gender: 'Male',
-      phone: '+91 98765 43210',
-      email: 'john.doe@email.com',
-      address: '12, MG Road, Bangalore',
-    },
-    {
-      id: 'P-10235',
-      name: 'Priya Kumari',
-      dob: '1990-07-22',
-      gender: 'Female',
-      phone: '+91 87654 32109',
-      email: 'priya.k@email.com',
-      address: '45, Anna Nagar, Chennai',
-    },
-    {
-      id: 'P-10236',
-      name: 'Ravi Shankar',
-      dob: '1978-12-01',
-      gender: 'Male',
-      phone: '+91 76543 21098',
-      email: 'ravi.s@email.com',
-      address: '78, Jubilee Hills, Hyderabad',
-    },
-  ]
+export async function setTotpSecret(username: string, secret: string): Promise<void> {
+  const { error } = await supabase.from('staff').update({ totp_secret: secret }).eq('username', username)
+  if (error) throw error
 }
 
-export type { Account }
+export type NewStaff = { username: string; email: string; name: string; role: string; totp_secret: string }
+
+/** The secret is included in the same insert as the account — no window where the row exists
+ *  with no secret, which would otherwise be an inconsistent half-created state. */
+export async function createStaff(staff: NewStaff): Promise<void> {
+  const { error } = await supabase.from('staff').insert(staff)
+  if (error) throw error
+}
+
+export const isUniqueViolation = (err: unknown) => (err as { code?: string } | null)?.code === '23505'
+
+export async function getPatient(id: string): Promise<Patient | undefined> {
+  const { data, error } = await supabase.from('patients').select('*').ilike('id', id.trim()).maybeSingle()
+  if (error) throw error
+  return data ?? undefined
+}
+
+export async function createPatient(p: Omit<Patient, 'id'>): Promise<Patient> {
+  const { data, error } = await supabase.from('patients').insert(p).select().single()
+  if (error) throw error
+  return data
+}

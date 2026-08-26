@@ -2,7 +2,15 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { randomBytes } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { toDataURL } from 'qrcode'
-import { seedPatients, seedUsers, type Account, type Patient } from './store.ts'
+import {
+  createPatient,
+  createStaff,
+  findStaff,
+  getPatient,
+  isUniqueViolation,
+  toUser,
+  type Patient,
+} from './store.ts'
 import { generateSecret, otpauthUri, verifyTotp } from './totp.ts'
 
 const SESSION_COOKIE = 'hms_session'
@@ -19,55 +27,76 @@ function parseCookies(header: string | undefined): Record<string, string> {
   return out
 }
 
+// Staff and patient records live in Supabase (server/store.ts) — this file only keeps sessions
+// and the lockout counter in memory, since those are short-lived by design either way.
 export function createApp() {
-  const users = seedUsers()
-  const patients = seedPatients()
   const sessions = new Map<string, { email: string; expires: number }>()
   const failedAttempts = new Map<string, { count: number; lockedUntil: number }>()
 
-  const findAccount = (login: string) =>
-    users.find((u) => u.username === login.trim() || u.email === login.trim().toLowerCase())
-
-  function currentUser(req: Request): Account | undefined {
+  async function currentUser(req: Request) {
     const id = parseCookies(req.headers.cookie)[SESSION_COOKIE]
     const session = id ? sessions.get(id) : undefined
     if (!session || session.expires < Date.now()) return undefined
-    return users.find((u) => u.email === session.email)
+    const account = await findStaff(session.email)
+    return account ? toUser(account) : undefined
   }
 
-  function requireSession(req: Request, res: Response, next: NextFunction) {
-    if (!currentUser(req)) return void res.status(401).json({ error: 'Not signed in.' })
+  async function requireSession(req: Request, res: Response, next: NextFunction) {
+    if (!(await currentUser(req))) return void res.status(401).json({ error: 'Not signed in.' })
     next()
   }
 
   const app = express()
   app.use(express.json())
 
+  // Login only ever looks up an already-set-up account. It never creates one and never touches
+  // totp_secret — that's exclusively /api/auth/signup's job.
   app.post('/api/auth/begin', async (req, res) => {
-    const account = findAccount(String(req.body?.login ?? ''))
+    const account = await findStaff(String(req.body?.login ?? ''))
     if (!account) {
-      return res.status(404).json({ error: 'No staff account found for that username or email.' })
+      return res.status(404).json({ error: 'No account found for that username or email. Sign up first.' })
     }
-    if (account.totpSecret) return res.json({ enrolling: false })
-
-    const secret = generateSecret()
-    account.totpSecret = secret
-    const qr = await toDataURL(otpauthUri(account.email, secret))
-    res.json({ enrolling: true, secret, qr })
+    if (!account.totp_secret) {
+      return res.status(409).json({ error: 'This account has not finished setup. Please sign up.' })
+    }
+    res.json({ ok: true })
   })
 
-  app.post('/api/auth/verify', (req, res) => {
+  app.post('/api/auth/signup', async (req, res) => {
+    const username = String(req.body?.username ?? '').trim()
+    const email = String(req.body?.email ?? '').trim().toLowerCase()
+    const name = String(req.body?.name ?? '').trim()
+    const role = String(req.body?.role ?? '').trim()
+    if (!username || !email || !name || !role) {
+      return res.status(400).json({ error: 'Name, username, email, and role are all required.' })
+    }
+
+    const secret = generateSecret()
+    try {
+      await createStaff({ username, email, name, role, totp_secret: secret })
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        return res.status(409).json({ error: 'An account with that username or email already exists.' })
+      }
+      throw err
+    }
+
+    const qr = await toDataURL(otpauthUri(email, secret))
+    res.status(201).json({ secret, qr })
+  })
+
+  app.post('/api/auth/verify', async (req, res) => {
     const login = String(req.body?.login ?? '')
     const code = String(req.body?.code ?? '')
     const key = login.trim().toLowerCase()
-    const account = findAccount(login)
+    const account = await findStaff(login)
 
     const lock = failedAttempts.get(key)
     if (lock?.lockedUntil && lock.lockedUntil > Date.now()) {
       return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' })
     }
 
-    if (!account?.totpSecret || !verifyTotp(account.email, account.totpSecret, code)) {
+    if (!account?.totp_secret || !verifyTotp(account.email, account.totp_secret, code)) {
       const count = (lock?.count ?? 0) + 1
       failedAttempts.set(
         key,
@@ -85,8 +114,7 @@ export function createApp() {
       sameSite: 'lax',
       maxAge: SESSION_TTL_MS,
     })
-    const { totpSecret: _, ...user } = account
-    res.json({ user })
+    res.json({ user: toUser(account) })
   })
 
   app.post('/api/auth/logout', (req, res) => {
@@ -96,25 +124,21 @@ export function createApp() {
     res.json({ ok: true })
   })
 
-  app.get('/api/auth/me', (req, res) => {
-    const account = currentUser(req)
-    if (!account) return res.status(401).json({ error: 'Not signed in.' })
-    const { totpSecret: _, ...user } = account
+  app.get('/api/auth/me', async (req, res) => {
+    const user = await currentUser(req)
+    if (!user) return res.status(401).json({ error: 'Not signed in.' })
     res.json({ user })
   })
 
-  app.get('/api/patients/:id', requireSession, (req, res) => {
-    const id = String(req.params.id).trim().toLowerCase()
-    const patient = patients.find((p) => p.id.toLowerCase() === id)
+  app.get('/api/patients/:id', requireSession, async (req, res) => {
+    const patient = await getPatient(String(req.params.id))
     if (!patient) return res.status(404).json({ error: 'Patient not found.' })
     res.json({ patient })
   })
 
-  app.post('/api/patients', requireSession, (req, res) => {
-    const p = req.body as Omit<Patient, 'id'>
-    const next: Patient = { ...p, id: `P-${10234 + patients.length}` }
-    patients.push(next)
-    res.status(201).json({ patient: next })
+  app.post('/api/patients', requireSession, async (req, res) => {
+    const patient = await createPatient(req.body as Omit<Patient, 'id'>)
+    res.status(201).json({ patient })
   })
 
   return app

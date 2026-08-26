@@ -13,7 +13,7 @@ export type Patient = {
   address: string
 }
 
-type BeginResult = { enrolling: true; secret: string; qr: string } | { enrolling: false }
+type Enrollment = { secret: string; qr: string }
 
 let onUnauthorized: (() => void) | null = null
 /** Called whenever the server says the session is gone — wire it to clear client-side user state. */
@@ -32,11 +32,26 @@ export async function me(): Promise<User | null> {
   return (await res.json()).user
 }
 
-export async function beginLogin(login: string): Promise<BeginResult> {
+/** Confirms an account exists and is already enrolled. Never creates anything, never mutates. */
+export async function checkLogin(login: string): Promise<void> {
   const res = await fetch('/api/auth/begin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ login }),
+  })
+  if (!res.ok) await throwApiError(res)
+}
+
+export async function signUp(input: {
+  username: string
+  email: string
+  name: string
+  role: string
+}): Promise<Enrollment> {
+  const res = await fetch('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
   })
   if (!res.ok) await throwApiError(res)
   return res.json()
