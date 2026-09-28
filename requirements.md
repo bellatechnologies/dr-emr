@@ -60,9 +60,9 @@ When patient details have been entered and a report is generated, the full repor
 
 Click either image to open the full-size screenshot.
 
-[![Screenshot 4: report overview](v1/screenshots/4.png)](v1/screenshots/4.png)
+[![Screenshot 4: report overview](screenshots/4.png)](screenshots/4.png)
 
-[![Screenshot 5: report detail and annotations](v1/screenshots/5.png)](v1/screenshots/5.png)
+[![Screenshot 5: report detail and annotations](screenshots/5.png)](screenshots/5.png)
 
 The reference report visibly includes patient and doctor/hospital identification, visit date and time, vitals, growth indicators, diagnosis/impression, prescribed medications with dose/frequency/duration and remarks, plan, advice, and follow-up. Confirm which of these sections are required and whether any other information from the screenshots must appear in the generated report.
 
@@ -98,4 +98,4 @@ Pending input:
 ## 9. Reference material
 
 - Product reference: [Eka Care](https://www.eka.care/)
-- Supplied screenshots: `v1/screenshots/`
+- Supplied screenshots: `screenshots/`
